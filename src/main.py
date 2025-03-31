@@ -9,10 +9,11 @@ Chức năng:
 # === IMPORT CÁC THƯ VIỆN CẦN THIẾT ===
 import streamlit as st  # Thư viện tạo giao diện web
 from dotenv import load_dotenv  # Đọc file .env chứa API key
-from seed_data import seed_chromadb, seed_chromadb_live  # Hàm xử lý dữ liệu
-from agent import get_retriever, get_llm_and_agent
+from seed_data import seed_pdf_data, get_available_collections  # Chỉ import hàm xử lý PDF
+from agent import get_retriever, get_llm_and_agent, determine_collection
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+import os
 
 # === THIẾT LẬP GIAO DIỆN TRANG WEB ===
 def setup_page():
@@ -49,96 +50,53 @@ def setup_sidebar():
             "Chọn Embeddings Model:",
             ["HuggingFace"]
         )
-        use_ollama_embeddings = (embeddings_choice == "HuggingFace")
+        use_huggingface = (embeddings_choice == "HuggingFace")
         
         # Phần 2: Cấu hình Data
         st.header("📚 Nguồn dữ liệu")
         data_source = st.radio(
             "Chọn nguồn dữ liệu:",
-            ["File Local"]
+            ["File PDF Local"]
         )
         
-        # Xử lý nguồn dữ liệu dựa trên embeddings đã chọn
-        if data_source == "File Local":
-            handle_local_file(use_ollama_embeddings)
-        else:
-            handle_url_input(use_ollama_embeddings)
+        if data_source == "File PDF Local":
+            handle_local_file(use_huggingface)
             
-        # Thêm phần chọn collection để query
-        st.header("🔍 Collection để truy vấn")
-        collection_to_query = st.text_input(
-            "Nhập tên collection cần truy vấn:",
-            "data_test",
-            help="Nhập tên collection bạn muốn sử dụng để tìm kiếm thông tin"
-        )
+        # Hiển thị các collection đang có
+        st.header("🔍 Collections hiện có")
+        collections = get_available_collections("chroma_db")
+        if collections:
+            st.write("Các nhóm dữ liệu:")
+            for col in collections:
+                st.info(f"📚 {col}")
+        else:
+            st.warning("Chưa có dữ liệu nào được tải lên")
         
         # Phần 3: Model AI - Removed model choice since we're only using Groq
         st.header("🤖 Model AI")
         st.info("Sử dụng Groq AI (deepseek-r1-distill-llama-70b)")
         model_choice = "groq"
         
-        return model_choice, collection_to_query
+        return model_choice
 
-def handle_local_file(use_ollama_embeddings: bool):
+def handle_local_file(use_huggingface: bool):
     """
-    Xử lý khi người dùng chọn tải file
+    Xử lý khi người dùng chọn tải file PDF
     """
-    collection_name = st.text_input(
-        "Tên collection:", 
-        "data_test",
-        help="Nhập tên collection bạn muốn lưu trong ChromaDB"
-    )
-    filename = st.text_input("Tên file JSON:", "stack.json")
-    directory = st.text_input("Thư mục chứa file:", "data")
+    st.markdown("##### Thông tin về thư mục PDF")
+    st.info("Thư mục chứa PDF: E:/WORK/project/chatbot_RAG/data/pdf")
     
-    if st.button("Tải dữ liệu từ file"):
-        if not collection_name:
-            st.error("Vui lòng nhập tên collection!")
-            return
-            
-        with st.spinner("Đang tải dữ liệu..."):
+    if st.button("Tải và xử lý dữ liệu PDF"):
+        with st.spinner("Đang xử lý các file PDF..."):
             try:
-                persist_dir = "chroma_db"
-                seed_chromadb(
-                    persist_dir,
-                    collection_name, 
-                    filename, 
-                    directory, 
-                    use_ollama=use_ollama_embeddings
+                persist_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
+                seed_pdf_data(
+                    pdf_directory="E:/WORK/project/chatbot_RAG/data/pdf",
+                    persist_directory=persist_dir
                 )
-                st.success(f"Đã tải dữ liệu thành công vào collection '{collection_name}'!")
+                st.success("Đã xử lý thành công các file PDF!")
             except Exception as e:
-                st.error(f"Lỗi khi tải dữ liệu: {str(e)}")
-
-def handle_url_input(use_ollama_embeddings: bool):
-    """
-    Xử lý khi người dùng chọn crawl URL
-    """
-    collection_name = st.text_input(
-        "Tên collection:", 
-        "data_test_live",
-        help="Nhập tên collection bạn muốn lưu trong ChromaDB"
-    )
-    url = st.text_input("Nhập URL:", "https://www.stack-ai.com/docs")
-    
-    if st.button("Crawl dữ liệu"):
-        if not collection_name:
-            st.error("Vui lòng nhập tên collection!")
-            return
-            
-        with st.spinner("Đang crawl dữ liệu..."):
-            try:
-                persist_dir = "chroma_db"
-                seed_chromadb_live(
-                    url,
-                    persist_dir,
-                    collection_name, 
-                    'stack-ai', 
-                    use_ollama=use_ollama_embeddings
-                )
-                st.success(f"Đã crawl dữ liệu thành công vào collection '{collection_name}'!")
-            except Exception as e:
-                st.error(f"Lỗi khi crawl dữ liệu: {str(e)}")
+                st.error(f"Lỗi khi xử lý PDF: {str(e)}")
 
 # === GIAO DIỆN CHAT CHÍNH ===
 def setup_chat_interface(model_choice):
@@ -162,21 +120,30 @@ def setup_chat_interface(model_choice):
     return msgs
 
 # === XỬ LÝ TIN NHẮN NGƯỜI DÙNG ===
-def handle_user_input(msgs, agent_executor):
+def handle_user_input(msgs, agent_executor, retriever):
     """
-    Xử lý khi người dùng gửi tin nhắn:
-    1. Hiển thị tin nhắn người dùng
-    2. Gọi AI xử lý và trả lời
-    3. Lưu vào lịch sử chat
+    Xử lý khi người dùng gửi tin nhắn
     """
-    if prompt := st.chat_input("Hãy hỏi tôi bất cứ điều gì về Stack AI!"):
-        # Lưu và hiển thị tin nhắn người dùng
+    if prompt := st.chat_input("Hãy hỏi tôi về thủ tục hành chính công"):
         st.session_state.messages.append({"role": "human", "content": prompt})
         st.chat_message("human").write(prompt)
         msgs.add_user_message(prompt)
 
-        # Xử lý và hiển thị câu trả lời
         with st.chat_message("assistant"):
+            with st.expander("🔍 Kết quả tìm kiếm"):
+                collection = determine_collection(prompt)
+                st.info(f"Đang tìm trong nhóm: {collection}")
+                
+                # Sử dụng invoke thay vì get_relevant_documents
+                relevant_docs = retriever.invoke(prompt)
+                
+                for i, doc in enumerate(relevant_docs, 1):
+                    st.markdown(f"""
+                    **Kết quả {i}**
+                    - Nguồn: {doc.metadata.get('source', 'Không rõ')}
+                    - Nội dung: {doc.page_content[:200]}...
+                    """)
+            
             st_callback = StreamlitCallbackHandler(st.container())
             
             # Lấy lịch sử chat
@@ -206,14 +173,15 @@ def main():
     Hàm chính điều khiển luồng chương trình
     """
     initialize_app()
-    model_choice, collection_to_query = setup_sidebar()
+    model_choice = setup_sidebar()
     msgs = setup_chat_interface(model_choice)
     
-    # Khởi tạo retriever và agent
-    retriever = get_retriever(collection_to_query)
+    # Khởi tạo retriever với đường dẫn tuyệt đối
+    persist_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
+    retriever = get_retriever(persist_dir)
     agent_executor = get_llm_and_agent(retriever)
     
-    handle_user_input(msgs, agent_executor)
+    handle_user_input(msgs, agent_executor, retriever)
 
 # Chạy ứng dụng
 if __name__ == "__main__":
