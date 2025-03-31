@@ -1,6 +1,8 @@
 # Import các thư viện cần thiết
 import os
 from dotenv import load_dotenv
+import logging
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -13,63 +15,70 @@ from langchain.tools.retriever import create_retriever_tool  # Tạo công cụ 
 from langchain_groq import ChatGroq  # Model ngôn ngữ Groq
 from langchain.agents import AgentExecutor, create_openai_functions_agent  # Tạo và thực thi agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # Xử lý prompt
-from seed_data import connect_to_chromadb  # Kết nối với ChromaDB
+from seed_data import connect_to_chromadb, get_available_collections  # Kết nối với ChromaDB và lấy danh sách collections
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler  # Xử lý callback cho Streamlit
 from langchain_community.chat_message_histories import StreamlitChatMessageHistory  # Lưu trữ lịch sử chat
-from langchain.retrievers import EnsembleRetriever  # Kết hợp nhiều retriever
-from langchain_community.retrievers import BM25Retriever  # Retriever dựa trên BM25
 from langchain_core.documents import Document  # Lớp Document
+from langchain_core.retrievers import BaseRetriever  # BaseRetriever interface
 
-def get_retriever(collection_name: str = "data_test") -> EnsembleRetriever:
-    """
-    Tạo một ensemble retriever kết hợp vector search (ChromaDB) và BM25
-    Args:
-        collection_name (str): Tên collection trong ChromaDB để truy vấn
-    """
-    try:
-        persist_dir = "chroma_db"
-        # Kết nối với ChromaDB và tạo vector retriever
-        vectorstore = connect_to_chromadb(persist_dir, collection_name)
-        chroma_retriever = vectorstore.as_retriever(
-            search_type="similarity", 
-            search_kwargs={"k": 4}
-        )
+def determine_collection(query: str) -> str:
+    """Xác định collection phù hợp với câu hỏi của người dùng"""
+    query_lower = query.lower()
+    
+    # Kiểm tra từ khóa để xác định collection
+    if any(keyword in query_lower for keyword in ["nước ngoài", "quốc tế", "ngoại quốc", "người nước ngoài"]):
+        return "nuoc_ngoai"
+    elif any(keyword in query_lower for keyword in ["liên thông", "kết hợp", "đồng thời"]):
+        return "lien_thong"
+    elif any(keyword in query_lower for keyword in ["lưu động", "đăng ký lại", "đã có hồ sơ", "đặc biệt"]):
+        return "dac_biet"
+    else:
+        return "trong_nuoc"
 
-        # Tạo BM25 retriever từ toàn bộ documents
-        documents = [
-            Document(page_content=doc.page_content, metadata=doc.metadata)
-            for doc in vectorstore.similarity_search("", k=100)
-        ]
-        
-        if not documents:
-            raise ValueError(f"Không tìm thấy documents trong collection '{collection_name}'")
+class SmartRetriever(BaseRetriever, BaseModel):
+    persist_dir: str = Field(default="chroma_db")
+    
+    class Config:
+        arbitrary_types_allowed = True
+    
+    def _get_relevant_documents(self, query: str):
+        """Required abstract method implementation from BaseRetriever"""
+        try:
+            collection_name = determine_collection(query)
+            logging.info(f"Tìm kiếm trong collection: {collection_name}")
             
-        bm25_retriever = BM25Retriever.from_documents(documents)
-        bm25_retriever.k = 4
-
-        # Kết hợp hai retriever với tỷ trọng
-        ensemble_retriever = EnsembleRetriever(
-            retrievers=[chroma_retriever, bm25_retriever],
-            weights=[0.7, 0.3]
-        )
-        return ensemble_retriever
-        
-    except Exception as e:
-        print(f"Lỗi khi khởi tạo retriever: {str(e)}")
-        # Trả về retriever với document mặc định nếu có lỗi
-        default_doc = [
-            Document(
-                page_content="Có lỗi xảy ra khi kết nối database. Vui lòng thử lại sau.",
+            vectorstore = connect_to_chromadb(self.persist_dir, collection_name)
+            results = vectorstore.similarity_search(query, k=4)
+            logging.info(f"Tìm thấy {len(results)} kết quả từ {collection_name}")
+            
+            return results
+            
+        except Exception as e:
+            logging.error(f"Lỗi khi tìm kiếm: {str(e)}")
+            return [Document(
+                page_content="Có lỗi xảy ra khi tìm kiếm. Vui lòng thử lại sau.",
                 metadata={"source": "error"}
-            )
-        ]
-        return BM25Retriever.from_documents(default_doc)
+            )]
+    
+    def invoke(self, input_query: str, **kwargs):
+        """New invoke method that calls _get_relevant_documents"""
+        return self._get_relevant_documents(input_query)
 
-# Tạo công cụ tìm kiếm cho agent
+def get_retriever(persist_dir: str = None) -> SmartRetriever:
+    """
+    Tạo retriever thông minh dựa trên nội dung câu hỏi
+    Args:
+        persist_dir: Đường dẫn tuyệt đối đến thư mục ChromaDB
+    """
+    if persist_dir is None:
+        persist_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
+    return SmartRetriever(persist_dir=persist_dir)
+
+# Cập nhật tool với đường dẫn tuyệt đối
 tool = create_retriever_tool(
-    get_retriever(),
+    get_retriever(os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")),
     "find",
-    "Search for information of Stack AI."
+    "Tìm kiếm thông tin về thủ tục hành chính công dựa trên từ khóa trong câu hỏi."
 )
 
 VIETNAMESE_SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên trả lời các câu hỏi về thủ tục hành chính công. 
@@ -87,11 +96,10 @@ def get_llm_and_agent(_retriever, model_choice=None) -> AgentExecutor:
         temperature=0.7,
         groq_api_key=GROQ_API_KEY,
         max_tokens=2000,
-        model_kwargs={
-            "messages": [
-                {"role": "system", "content": VIETNAMESE_SYSTEM_PROMPT}
-            ]
-        }
+    )
+    
+    llm = llm.bind(
+        system_prompt=VIETNAMESE_SYSTEM_PROMPT
     )
     
     tools = [tool]
