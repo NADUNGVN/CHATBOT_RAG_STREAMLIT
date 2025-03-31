@@ -1,11 +1,10 @@
 import os
-import json
 from langchain_chroma import Chroma
 from langchain.schema import Document
 from dotenv import load_dotenv
-from uuid import uuid4
-from crawl import crawl_web
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
@@ -18,91 +17,114 @@ def get_embeddings():
         model_kwargs={"trust_remote_code": True}
     )
 
-def load_data_from_local(filename: str, directory: str) -> tuple:
+def load_pdf_documents(pdf_directory):
     """
-    Hàm đọc dữ liệu từ file JSON local
-    Args:
-        filename (str): Tên file JSON cần đọc (ví dụ: 'data.json')
-        directory (str): Thư mục chứa file (ví dụ: 'data_v3')
-    Returns:
-        tuple: Trả về (data, doc_name) trong đó:
-            - data: Dữ liệu JSON đã được parse
-            - doc_name: Tên tài liệu đã được xử lý (bỏ đuôi .json và thay '_' bằng khoảng trắng)
+    Đọc tất cả file PDF từ thư mục
     """
-    file_path = os.path.join(directory, filename)
-    with open(file_path, 'r') as file:
-        data = json.load(file)
-    print(f'Data loaded from {file_path}')
-    # Chuyển tên file thành tên tài liệu (bỏ đuôi .json và thay '_' bằng khoảng trắng)
-    return data, filename.rsplit('.', 1)[0].replace('_', ' ')
+    loader = DirectoryLoader(
+        pdf_directory,
+        glob="**/*.pdf",
+        loader_cls=PyPDFLoader,
+        show_progress=True
+    )
+    documents = loader.load()
+    return documents
 
-def seed_chromadb(persist_directory: str, collection_name: str, filename: str, directory: str, use_huggingface: bool = True) -> Chroma:
+def split_documents(documents):
     """
-    Hàm tạo và lưu vector embeddings vào ChromaDB từ dữ liệu local
+    Chia nhỏ tài liệu thành các đoạn
     """
-    embeddings = get_embeddings()
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = text_splitter.split_documents(documents)
+    return chunks
+
+def classify_document(document):
+    """
+    Phân loại tài liệu theo nội dung
+    """
+    source = document.metadata.get("source", "").lower()
+    content = document.page_content.lower()
     
-    local_data, doc_name = load_data_from_local(filename, directory)
+    if "yếu tố nước ngoài" in source or "nước ngoài" in source:
+        return "nuoc_ngoai"
+    elif "liên thông" in source:
+        return "lien_thong"
+    elif any(term in source for term in ["lưu động", "đăng ký lại", "người đã có hồ sơ", "thay đổi", "cải chính", "xác định lại", "bổ sung", "kết hợp"]):
+        return "dac_biet"
+    else:
+        return "trong_nuoc"
 
-    documents = [
-        Document(
-            page_content=doc.get('page_content') or '',
-            metadata={
-                'source': doc['metadata'].get('source') or '',
-                'content_type': doc['metadata'].get('content_type') or 'text/plain',
-                'title': doc['metadata'].get('title') or '',
-                'description': doc['metadata'].get('description') or '',
-                'language': doc['metadata'].get('language') or 'en',
-                'doc_name': doc_name,
-                'start_index': doc['metadata'].get('start_index') or 0
-            }
-        )
-        for doc in local_data
-    ]
-
-    # Khởi tạo ChromaDB
-    vectorstore = Chroma(
-        persist_directory=persist_directory,
-        embedding_function=embeddings,
-        collection_name=collection_name
+def create_vectordbs(chunks, base_persist_directory):
+    """
+    Tạo và lưu vector embeddings cho từng loại tài liệu
+    """
+    embeddings = HuggingFaceEmbeddings(
+        model_name="dangvantuan/vietnamese-document-embedding",
+        model_kwargs={"trust_remote_code": True}
     )
     
-    # Thêm documents vào ChromaDB
-    vectorstore.add_documents(documents=documents)
+    categorized_chunks = {
+        "trong_nuoc": [],
+        "nuoc_ngoai": [],
+        "dac_biet": [],
+        "lien_thong": []
+    }
     
-    # Lưu xuống ổ cứng
-    vectorstore.persist()
+    for chunk in chunks:
+        category = classify_document(chunk)
+        categorized_chunks[category].append(chunk)
     
-    return vectorstore
+    vectordbs = {}
+    for category, category_chunks in categorized_chunks.items():
+        if category_chunks:
+            persist_directory = os.path.join(base_persist_directory, category)
+            vectordbs[category] = Chroma.from_documents(
+                documents=category_chunks,
+                embedding=embeddings,
+                persist_directory=persist_directory
+            )
+            print(f"Đã tạo vector database '{category}' với {len(category_chunks)} đoạn văn bản")
+            
+            files = set(chunk.metadata.get("source", "Không rõ") for chunk in category_chunks)
+            print(f"Các file trong collection '{category}':")
+            for file in files:
+                print(f"- {file}")
+    
+    return vectordbs
 
-def seed_chromadb_live(URL: str, persist_directory: str, collection_name: str, doc_name: str, use_huggingface: bool = True) -> Chroma:
+def get_available_collections(base_persist_directory: str) -> list:
     """
-    Hàm crawl dữ liệu trực tiếp từ URL và tạo vector embeddings trong ChromaDB
+    Lấy danh sách tất cả các collection có sẵn
     """
-    embeddings = get_embeddings()
+    collections = []
+    categories = ["trong_nuoc", "nuoc_ngoai", "dac_biet", "lien_thong"]
     
-    documents = crawl_web(URL)
+    for category in categories:
+        persist_directory = os.path.join(base_persist_directory, category)
+        if os.path.exists(persist_directory):
+            collections.append(category)
+            
+    return collections
 
-    for doc in documents:
-        metadata = {
-            'source': doc.metadata.get('source') or '',
-            'content_type': doc.metadata.get('content_type') or 'text/plain',
-            'title': doc.metadata.get('title') or '',
-            'description': doc.metadata.get('description') or '',
-            'language': doc.metadata.get('language') or 'en',
-            'doc_name': doc_name,
-            'start_index': doc.metadata.get('start_index') or 0
-        }
-        doc.metadata = metadata
-
-    vectorstore = Chroma(
-        persist_directory=persist_directory,
-        embedding_function=embeddings,
-        collection_name=collection_name
-    )
-    vectorstore.add_documents(documents=documents)
-    vectorstore.persist()
-    return vectorstore
+def seed_pdf_data(pdf_directory: str, persist_directory: str):
+    """
+    Hàm chính để xử lý PDF và tạo vector database
+    """
+    # 1. Load PDF documents
+    documents = load_pdf_documents(pdf_directory)
+    print(f"Đã tải {len(documents)} tài liệu PDF")
+    
+    # 2. Split documents
+    chunks = split_documents(documents)
+    print(f"Đã chia thành {len(chunks)} đoạn văn bản")
+    
+    # 3. Create vector databases
+    vectordbs = create_vectordbs(chunks, persist_directory)
+    return vectordbs
 
 def connect_to_chromadb(persist_directory: str, collection_name: str) -> Chroma:
     """
@@ -119,19 +141,11 @@ def connect_to_chromadb(persist_directory: str, collection_name: str) -> Chroma:
 def main():
     """
     Hàm chính để kiểm thử các chức năng của module
-    Thực hiện:
-        1. Test seed_chromadb với dữ liệu từ file local 'stack.json'
-        2. (Đã comment) Test seed_chromadb_live với dữ liệu từ trang web stack-ai
-    Chú ý:
-        - Đảm bảo ChromaDB đã được cấu hình đúng
-        - Các biến môi trường cần thiết (như OPENAI_API_KEY) đã được cấu hình
     """
-    # Test seed_chromadb với dữ liệu local
     persist_dir = "chroma_db"
-    seed_chromadb(persist_dir, 'data_test', 'stack.json', 'data', use_huggingface=True)
-    # Test seed_chromadb_live với URL trực tiếp
-    # seed_chromadb_live('https://www.stack-ai.com/docs', persist_dir, 'data_test_live', 'stack-ai', use_huggingface=True)
-
+    pdf_dir = "E:/WORK/project/chatbot_RAG/data/pdf"  # Sửa dấu \ thành /
+    seed_pdf_data(pdf_dir, persist_dir)
+    
 # Chạy main() nếu file được thực thi trực tiếp
 if __name__ == "__main__":
     main()
