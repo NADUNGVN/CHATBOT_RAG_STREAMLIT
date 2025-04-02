@@ -5,6 +5,7 @@ import nest_asyncio
 import pandas as pd
 import openpyxl
 import time
+from datetime import datetime
 from cb import load_retrievers, build_rag_chatbots, process_query
 
 # Initialize asyncio event loop
@@ -53,6 +54,10 @@ def initialize_chatbot():
         st.session_state.messages = []
     return True
 
+def initialize_session_state():
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+
 def main():
     # Set page config
     st.set_page_config(
@@ -61,6 +66,14 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+
+    # Initialize session state
+    initialize_session_state()
+
+    # Create images directory if it doesn't exist
+    images_dir = os.path.join(os.path.dirname(__file__), "images")
+    os.makedirs(images_dir, exist_ok=True)
+    logo_path = os.path.join(images_dir, "logo.png")
 
     # Improve sidebar UI
     with st.sidebar:
@@ -125,87 +138,93 @@ def main():
                         except Exception as e:
                             st.error(f"❌ Lỗi khi tải file {uploaded_file.name}: {str(e)}")
 
-    # Main chat interface
-    main_container = st.container()
-    with main_container:
-        # Improve chat container styling
-        st.markdown("""
-        <style>
-        .main .block-container {
-            max-width: 800px;
-            padding: 2rem 1rem;
-        }
-        .user-message {
-            background-color: #e6f3ff;
-            padding: 1rem;
-            border-radius: 15px;
-            margin: 1rem 0;
-            box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
-        }
-        .bot-message {
-            background-color: #f0f2f6;
-            padding: 1rem;
-            border-radius: 15px;
-            margin: 1rem 0;
-            box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
-        }
-        .source-doc {
-            font-size: 0.8rem;
-            color: #666;
-            margin-top: 0.5rem;
-            padding: 0.5rem;
-            border-left: 3px solid #666;
-        }
-        .stButton button {
-            width: 100%;
-        }
-        .chat-controls {
-            display: flex;
-            justify-content: flex-end;
-            margin: 1rem 0;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        # Chat header with controls
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.title("💬 RAG Chatbot Hành Chính Công")
-            st.caption("Trợ lý AI chuyên trả lời các câu hỏi về thủ tục hành chính")
-        with col2:
-            if st.button("🔄 Tạo chat mới", use_container_width=True):
-                clear_chat_history()
-                st.rerun()
-
-        # Initialize chatbot
-        if not initialize_chatbot():
-            return
-
-        # Chat input
-        user_input = st.chat_input("Nhập câu hỏi của bạn...")
-
-        # Display chat messages
-        for message in st.session_state.messages:
-            if message["role"] == "user":
-                st.markdown(f'<div class="user-message">👤 {message["content"]}</div>', 
-                           unsafe_allow_html=True)
+    # Header section with logo and counter
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        try:
+            if os.path.exists(logo_path):
+                st.image(logo_path, width=100)
             else:
-                st.markdown(f'<div class="bot-message">🤖 {message["content"]}</div>', 
-                           unsafe_allow_html=True)
+                st.markdown("# 🏛️")  # Fallback icon if no logo
+        except Exception as e:
+            st.markdown("# 🏛️")  # Fallback icon if error loading logo
+    with col2:
+        st.title("💬 RAG Chatbot Hành Chính Công")
+        message_count = len([m for m in st.session_state.get('messages', [])])
+        st.caption(f"Số tin nhắn: {message_count}")
+    with col3:
+        if st.button("🔄 Tạo chat mới"):
+            clear_chat_history()
+            st.rerun()
+
+    # Initialize chatbot (should be called before accessing messages)
+    if not initialize_chatbot():
+        return
+
+    # Display messages with enhanced formatting
+    if st.session_state.messages:
+        for message in st.session_state.messages:
+            timestamp = message.get("timestamp", datetime.now().strftime("%H:%M:%S"))
+            
+            if message["role"] == "user":
+                st.markdown(f'''
+                    <div class="message user-message">
+                        <div class="avatar">👤</div>
+                        <div class="content">
+                            <div class="text">{message["content"]}</div>
+                            <div class="timestamp">{timestamp}</div>
+                        </div>
+                    </div>
+                ''', unsafe_allow_html=True)
+            else:
+                st.markdown(f'''
+                    <div class="message bot-message">
+                        <div class="avatar">🤖</div>
+                        <div class="content">
+                            <div class="text">{message["content"]}</div>
+                            <div class="timestamp">{timestamp}</div>
+                            <div class="feedback-buttons">
+                                <button onclick="feedback('helpful')">👍</button>
+                                <button onclick="feedback('not-helpful')">👎</button>
+                            </div>
+                        </div>
+                    </div>
+                ''', unsafe_allow_html=True)
+                
                 if message.get("sources"):
-                    with st.expander("Xem nguồn tham khảo"):
+                    with st.expander("📚 Nguồn tham khảo"):
                         for i, doc in enumerate(message["sources"]):
+                            confidence = doc.metadata.get('confidence', 0.0) * 100
                             source_file = doc.metadata.get('source', 'Unknown')
                             page_number = doc.metadata.get('page', 'Unknown')
-                            st.markdown(f"""<div class="source-doc">
-                                {i + 1}. File: {os.path.basename(source_file)}, Trang: {page_number}
-                                </div>""", unsafe_allow_html=True)
+                            preview = doc.page_content[:200] + "..."
+                            
+                            st.markdown(f"""
+                                <div class="source-doc">
+                                    <div class="source-header">
+                                        {i + 1}. File: {os.path.basename(source_file)} 
+                                        <span class="confidence-score">Độ tin cậy: {confidence:.1f}%</span>
+                                    </div>
+                                    <div class="source-preview">{preview}</div>
+                                    <a href="pdf_viewer?file={source_file}&page={page_number}">
+                                        🔍 Xem trang {page_number}
+                                    </a>
+                                </div>
+                            """, unsafe_allow_html=True)
 
-        # Process user input
-        if user_input:
-            # Add user message to chat history
-            st.session_state.messages.append({"role": "user", "content": user_input})
+    # Chat input
+    user_input = st.chat_input("Nhập câu hỏi của bạn...")
 
+    # Process user input
+    if user_input:
+        with st.spinner("Đang xử lý..."):
+            # Add timestamp to messages
+            st.session_state.messages.append({
+                "role": "user", 
+                "content": user_input,
+                "timestamp": datetime.now().strftime("%H:%M:%S")
+            })
+            
             # Get bot response
             result = process_query(
                 user_input, 
@@ -217,7 +236,8 @@ def main():
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": result["answer"],
-                "sources": result.get("source_documents", [])
+                "sources": result.get("source_documents", []),
+                "timestamp": datetime.now().strftime("%H:%M:%S")
             })
             
             # Rerun to update the chat display
