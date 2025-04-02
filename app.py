@@ -261,7 +261,6 @@ def main():
                     if message.get("sources"):
                         with st.expander("📚 Nguồn tham khảo"):
                             for i, doc in enumerate(message["sources"]):
-                                confidence = doc.metadata.get('confidence', 0.0) * 100
                                 source_file = doc.metadata.get('source', 'Unknown')
                                 page_number = doc.metadata.get('page', 'Unknown')
                                 preview = doc.page_content[:200] + "..."
@@ -270,7 +269,6 @@ def main():
                                     <div class="source-doc">
                                         <div class="source-header">
                                             {i + 1}. File: {os.path.basename(source_file)} 
-                                            <span class="confidence-score">Độ tin cậy: {confidence:.1f}%</span>
                                         </div>
                                         <div class="source-preview">{preview}</div>
                                         <a href="pdf_viewer?file={source_file}&page={page_number}">
