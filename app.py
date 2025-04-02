@@ -161,87 +161,154 @@ def main():
     if not initialize_chatbot():
         return
 
-    # Display messages with enhanced formatting
-    if st.session_state.messages:
-        for message in st.session_state.messages:
-            timestamp = message.get("timestamp", datetime.now().strftime("%H:%M:%S"))
-            
-            if message["role"] == "user":
-                st.markdown(f'''
-                    <div class="message user-message">
-                        <div class="avatar">👤</div>
-                        <div class="content">
-                            <div class="text">{message["content"]}</div>
-                            <div class="timestamp">{timestamp}</div>
-                        </div>
-                    </div>
-                ''', unsafe_allow_html=True)
-            else:
-                st.markdown(f'''
-                    <div class="message bot-message">
-                        <div class="avatar">🤖</div>
-                        <div class="content">
-                            <div class="text">{message["content"]}</div>
-                            <div class="timestamp">{timestamp}</div>
-                            <div class="feedback-buttons">
-                                <button onclick="feedback('helpful')">👍</button>
-                                <button onclick="feedback('not-helpful')">👎</button>
-                            </div>
-                        </div>
-                    </div>
-                ''', unsafe_allow_html=True)
-                
-                if message.get("sources"):
-                    with st.expander("📚 Nguồn tham khảo"):
-                        for i, doc in enumerate(message["sources"]):
-                            confidence = doc.metadata.get('confidence', 0.0) * 100
-                            source_file = doc.metadata.get('source', 'Unknown')
-                            page_number = doc.metadata.get('page', 'Unknown')
-                            preview = doc.page_content[:200] + "..."
-                            
-                            st.markdown(f"""
-                                <div class="source-doc">
-                                    <div class="source-header">
-                                        {i + 1}. File: {os.path.basename(source_file)} 
-                                        <span class="confidence-score">Độ tin cậy: {confidence:.1f}%</span>
-                                    </div>
-                                    <div class="source-preview">{preview}</div>
-                                    <a href="pdf_viewer?file={source_file}&page={page_number}">
-                                        🔍 Xem trang {page_number}
-                                    </a>
-                                </div>
-                            """, unsafe_allow_html=True)
+    # Add custom CSS for message container and alignment
+    st.markdown("""
+        <style>
+        /* Main chat container */
+        div[data-testid="stVerticalBlock"] > div.element-container div.stMarkdown {
+            height: auto !important;
+        }
+        
+        .chat-container {
+            height: 600px;
+            overflow-y: auto;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            background: white;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            max-width: 80%;
+            clear: both;
+        }
+        
+        .user-message {
+            float: right;
+        }
+        
+        .bot-message {
+            float: left;
+        }
+        
+        .content {
+            padding: 10px 15px;
+            border-radius: 20px;
+        }
+        
+        .user-message .content {
+            background-color: #0084ff;
+            color: white;
+        }
+        
+        .bot-message .content {
+            background-color: #f0f0f0;
+        }
+        
+        .timestamp {
+            font-size: 0.7em;
+            opacity: 0.7;
+            margin-top: 5px;
+        }
+        
+        .bot-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        
+        .bot-icon {
+            font-size: 1.2em;
+        }
+        
+        </style>
+    """, unsafe_allow_html=True)
 
-    # Chat input
+    # Single chat container
+    with st.container():
+        if st.session_state.messages:
+            for message in st.session_state.messages:
+                content = message["content"].strip()
+                timestamp = message.get("timestamp", datetime.now().strftime("%H:%M:%S"))
+                
+                if message["role"] == "user":
+                    st.write(
+                        f'<div class="message user-message">'
+                        f'<div class="content">'
+                        f'<div class="text">{content}</div>'
+                        f'<div class="timestamp">{timestamp}</div>'
+                        f'</div></div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    # Format bot message with only robot icon
+                    bot_header = '<div class="bot-header"><span class="bot-icon">🤖</span></div>'
+                    
+                    st.write(
+                        f'<div class="message bot-message">'
+                        f'<div class="content">'
+                        f'{bot_header}'
+                        f'<div class="text">{content}</div>'
+                        f'<div class="timestamp">{timestamp}</div>'
+                        f'</div></div>',
+                        unsafe_allow_html=True
+                    )
+                    
+                    if message.get("sources"):
+                        with st.expander("📚 Nguồn tham khảo"):
+                            for i, doc in enumerate(message["sources"]):
+                                confidence = doc.metadata.get('confidence', 0.0) * 100
+                                source_file = doc.metadata.get('source', 'Unknown')
+                                page_number = doc.metadata.get('page', 'Unknown')
+                                preview = doc.page_content[:200] + "..."
+                                
+                                st.markdown(f"""
+                                    <div class="source-doc">
+                                        <div class="source-header">
+                                            {i + 1}. File: {os.path.basename(source_file)} 
+                                            <span class="confidence-score">Độ tin cậy: {confidence:.1f}%</span>
+                                        </div>
+                                        <div class="source-preview">{preview}</div>
+                                        <a href="pdf_viewer?file={source_file}&page={page_number}">
+                                            🔍 Xem trang {page_number}
+                                        </a>
+                                    </div>
+                                """, unsafe_allow_html=True)
+
+    # Chat input and processing
     user_input = st.chat_input("Nhập câu hỏi của bạn...")
 
-    # Process user input
     if user_input:
-        with st.spinner("Đang xử lý..."):
-            # Add timestamp to messages
-            st.session_state.messages.append({
-                "role": "user", 
-                "content": user_input,
-                "timestamp": datetime.now().strftime("%H:%M:%S")
-            })
+        try:
+            with st.spinner("Đang xử lý..."):
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": user_input,
+                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                })
+                
+                result = process_query(
+                    user_input, 
+                    st.session_state.qa_chains, 
+                    st.session_state.retrievers
+                )
+                
+                # Add collection to message data
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": result["answer"].strip(),
+                    "collection": result.get("collection", ""),  # Store collection
+                    "sources": result.get("source_documents", []),
+                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                })
             
-            # Get bot response
-            result = process_query(
-                user_input, 
-                st.session_state.qa_chains, 
-                st.session_state.retrievers
-            )
-
-            # Add bot response to chat history
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": result["answer"],
-                "sources": result.get("source_documents", []),
-                "timestamp": datetime.now().strftime("%H:%M:%S")
-            })
-            
-            # Rerun to update the chat display
             st.rerun()
+        except Exception as e:
+            st.error(f"Có lỗi xảy ra: {str(e)}")
 
 if __name__ == "__main__":
     main()
