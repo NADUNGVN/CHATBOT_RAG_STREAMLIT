@@ -19,15 +19,20 @@ Nếu không có thông tin, hãy thông báo rõ ràng là chưa có thông tin
 Luôn giữ giọng điệu lịch sự, chuyên nghiệp và nhắc nhở người dùng về các lưu ý quan trọng."""
 
 # Thêm hàm ghi log
-def log_to_excel(context, question, answer, log_file="logs/chat_logs.xlsx"):
+def log_to_excel(context, question, assistant_thought, answer, references, log_file="logs/chat_logs.xlsx"):
     os.makedirs("logs", exist_ok=True)
     
-    # Chuẩn bị dữ liệu
+    # Lấy thời gian hiện tại và định dạng theo kiểu dd/mm/yyyy HH:MM:SS
+    current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    
+    # Chuẩn bị dữ liệu với định dạng thời gian đã được format
     data = {
-        'Timestamp': [datetime.now()],
+        'Timestamp': [current_time],  # Đã được format
         'Context': [context],
         'Question': [question],
-        'Answer': [answer]
+        'Assistant_Thought': [assistant_thought],
+        'Answer': [answer],
+        'References': [references]
     }
     
     # Tạo DataFrame mới
@@ -40,8 +45,15 @@ def log_to_excel(context, question, answer, log_file="logs/chat_logs.xlsx"):
     else:
         updated_df = new_df
     
-    # Lưu vào file Excel
-    updated_df.to_excel(log_file, index=False)
+    # Lưu vào file Excel với định dạng cột thời gian
+    with pd.ExcelWriter(log_file, engine='openpyxl') as writer:
+        updated_df.to_excel(writer, index=False)
+        # Định dạng cột thời gian
+        workbook = writer.book
+        worksheet = writer.sheets['Sheet1']
+        timestamp_col = worksheet['A']
+        for cell in timestamp_col[1:]:  # Bỏ qua header
+            cell.number_format = 'dd/mm/yyyy hh:mm:ss'
 
 # 1. Tải các vector database đã tạo
 def load_retrievers(base_persist_directory):
@@ -171,17 +183,27 @@ def process_query(query, qa_chains, retrievers):
         docs = retrievers[collection].get_relevant_documents(query)
         context = "\n".join([doc.page_content for doc in docs])
         
+        # Thêm phần <think> cho assistant
+        assistant_thought = f"<think>Dựa trên collection {collection} và {len(docs)} tài liệu tham khảo</think>"
+        
         result = qa_chains[collection].invoke({"question": query})
         answer = result["answer"]
         
         # Xử lý lại chuỗi trả về
         if "<answer>" in answer:
-            # Lấy nội dung giữa thẻ <answer>
             answer = answer.split("<answer>")[1].split("</answer>")[0].strip()
-            # Xóa placeholder text nếu có
             answer = answer.replace("[Phần này sẽ hiển thị cho người dùng]", "").strip()
         
-        log_to_excel(context, query, answer)
+        # Tạo danh sách tài liệu tham khảo
+        references = []
+        for doc in result.get("source_documents", []):
+            source_file = doc.metadata.get('source', 'Unknown')
+            page_number = doc.metadata.get('page', 'Unknown')
+            references.append(f"File: {os.path.basename(source_file)}, Trang: {page_number}")
+        references_str = "\n".join(references)
+        
+        # Ghi log với format mới
+        log_to_excel(context, query, assistant_thought, answer, references_str)
         
         return {
             "answer": answer,
