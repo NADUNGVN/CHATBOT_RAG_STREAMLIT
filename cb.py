@@ -125,27 +125,18 @@ def build_rag_chatbots(vectordbs):
             input_key="question"
         )
         
-        # Cập nhật prompt template
+        # Đơn giản hóa prompt template
         prompt_template = PromptTemplate(
             input_variables=["context", "question"],
-            template="""Dựa vào các thông tin được cung cấp, hãy trả lời câu hỏi bằng tiếng Việt.
-Nếu không tìm thấy thông tin liên quan, hãy nói "Tôi không tìm thấy thông tin về vấn đề này."
+            template="""Dựa vào thông tin sau đây, hãy trả lời câu hỏi một cách trực tiếp bằng tiếng Việt.
+Nếu không có thông tin liên quan, hãy trả lời "Tôi không tìm thấy thông tin về vấn đề này."
 
-<context>
+Thông tin tham khảo:
 {context}
-</context>
 
-<question>
-{question}
-</question>
+Câu hỏi: {question}
 
-<think>
-[Đây là phần phân tích của AI, không hiển thị cho người dùng]
-</think>
-
-<answer>
-[Phần này sẽ hiển thị cho người dùng]
-</answer>"""
+Trả lời:"""
         )
         
         # Dictionary để lưu trữ các chain cho từng collection
@@ -174,24 +165,22 @@ Nếu không tìm thấy thông tin liên quan, hãy nói "Tôi không tìm th�
 
 # 4. Xử lý câu hỏi và trả lời
 def process_query(query, qa_chains, retrievers):
-    # Xác định collection phù hợp
     collection = determine_collection(query)
     
-    # Sử dụng chain tương ứng để trả lời
     if collection in qa_chains:
-        # Lấy context từ retriever
         docs = retrievers[collection].get_relevant_documents(query)
         context = "\n".join([doc.page_content for doc in docs])
         
-        # Gọi LLM để lấy câu trả lời
         result = qa_chains[collection].invoke({"question": query})
-        
-        # Tách phần answer từ kết quả
         answer = result["answer"]
-        if "<answer>" in answer:
-            answer = answer.split("<answer>")[1].split("</answer>")[0].strip()
         
-        # Ghi log với context đầy đủ
+        # Xử lý lại chuỗi trả về
+        if "<answer>" in answer:
+            # Lấy nội dung giữa thẻ <answer>
+            answer = answer.split("<answer>")[1].split("</answer>")[0].strip()
+            # Xóa placeholder text nếu có
+            answer = answer.replace("[Phần này sẽ hiển thị cho người dùng]", "").strip()
+        
         log_to_excel(context, query, answer)
         
         return {
