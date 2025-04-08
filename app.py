@@ -27,7 +27,7 @@ except RuntimeError:
     asyncio.set_event_loop(loop)
 
 # Ensure data directory exists
-data_dir = r"E:\WORK\project\chatbot_RAG\data\pdf"  # Updated path
+data_dir = "data/pdf"  # Updated path
 os.makedirs(data_dir, exist_ok=True)
 
 def clear_chat_history():
@@ -35,7 +35,7 @@ def clear_chat_history():
 
 def initialize_chatbot():
     if 'chatbot_initialized' not in st.session_state:
-        base_persist_directory = r"E:\WORK\project\chatbot_RAG\chroma_db"
+        base_persist_directory = "chroma_db"
         vectordbs, retrievers = load_retrievers(base_persist_directory)
         
         if not vectordbs:
